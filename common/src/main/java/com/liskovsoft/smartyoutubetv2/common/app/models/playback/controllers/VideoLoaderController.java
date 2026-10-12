@@ -21,6 +21,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.models.playback.manager.PlayerC
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.AppDialogPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.VideoActionPresenter;
 import com.liskovsoft.smartyoutubetv2.common.app.views.PlaybackView;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.SubtitlePrefetcher;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
@@ -275,6 +276,9 @@ public class VideoLoaderController extends BasePlayerController {
         String bgImageUrl = null;
 
         getVideo().sync(formatInfo);
+
+        // Keeps the caption track urls around so subtitles can be translated ahead of playback.
+        SubtitlePrefetcher.instance().setSubtitles(formatInfo.getSubtitles());
 
         // Fix stretched video for a couple milliseconds (before the onVideoSizeChanged gets called)
         applyAspectRatio(formatInfo);

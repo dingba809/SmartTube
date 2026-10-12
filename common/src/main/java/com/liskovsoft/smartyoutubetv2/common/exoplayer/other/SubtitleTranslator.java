@@ -10,9 +10,14 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import okhttp3.Call;
 import okhttp3.MediaType;
@@ -30,9 +35,19 @@ public class SubtitleTranslator {
         void onTranslate(String translation);
     }
 
+    public interface OnTranslateBatch {
+        /**
+         * Called on the main thread. Same size as the request, an entry is null when that
+         * particular line could not be translated.
+         */
+        void onTranslate(List<String> translations);
+    }
+
     private static final String TAG = SubtitleTranslator.class.getSimpleName();
     private static final MediaType JSON = MediaType.parse("application/json; charset=utf-8");
     private static final long TIMEOUT_SEC = 20;
+    /** Numbered answers like {@code [1] 你好}. */
+    private static final Pattern BATCH_LINE = Pattern.compile("^\\[(\\d+)]\\s*(.+)$");
     // Serial execution keeps the line order and stays clear of provider rate limits.
     private final ExecutorService mExecutor = Executors.newSingleThreadExecutor();
     private OkHttpClient mClient;
@@ -59,6 +74,34 @@ public class SubtitleTranslator {
         });
     }
 
+    /**
+     * Translates many lines in a single request. Far fewer round trips than one call per line,
+     * and the system prompt is paid for once instead of once per line.
+     */
+    public void translateBatch(String apiUrl, String apiKey, String model, String targetLanguage,
+                               List<String> texts, OnTranslateBatch callback) {
+        if (isBlank(apiUrl) || isBlank(model) || texts == null || texts.isEmpty()) {
+            Utils.post(() -> callback.onTranslate(null));
+            return;
+        }
+
+        String body = buildBatchBody(model, targetLanguage, texts);
+        int size = texts.size();
+
+        mExecutor.execute(() -> {
+            List<String> translations = null;
+
+            try {
+                translations = parseBatch(send(apiUrl, apiKey, body), size);
+            } catch (Exception e) {
+                Log.e(TAG, "translateBatch failed: " + e.getMessage());
+            }
+
+            List<String> result = translations;
+            Utils.post(() -> callback.onTranslate(result));
+        });
+    }
+
     private String send(String apiUrl, String apiKey, String body) throws IOException {
         Request.Builder builder = new Request.Builder()
                 .url(buildEndpoint(apiUrl))
@@ -72,7 +115,7 @@ public class SubtitleTranslator {
 
         try (Response response = call.execute()) {
             if (!response.isSuccessful()) {
-                Log.e(TAG, "translate failed: HTTP " + response.code());
+                Log.e(TAG, "request failed: HTTP " + response.code());
                 return null;
             }
 
@@ -127,6 +170,66 @@ public class SubtitleTranslator {
             Log.e(TAG, "buildBody failed: " + e.getMessage());
             return null;
         }
+    }
+
+    static String buildBatchBody(String model, String targetLanguage, List<String> texts) {
+        StringBuilder user = new StringBuilder();
+
+        for (int i = 0; i < texts.size(); i++) {
+            if (i > 0) {
+                user.append('\n');
+            }
+
+            // The numbered format is one line per cue, so flatten any multi line cue.
+            user.append('[').append(i + 1).append("] ").append(texts.get(i).replace('\n', ' '));
+        }
+
+        try {
+            JSONObject system = new JSONObject()
+                    .put("role", "system")
+                    .put("content", "You translate subtitle lines into " + targetLanguage
+                            + ". The user sends numbered lines. Reply with the same numbers, one"
+                            + " translation per line, nothing else. Keep the line count identical.");
+            JSONObject message = new JSONObject()
+                    .put("role", "user")
+                    .put("content", user.toString());
+
+            return new JSONObject()
+                    .put("model", model)
+                    .put("temperature", 0.2)
+                    .put("messages", new JSONArray().put(system).put(message))
+                    .toString();
+        } catch (JSONException e) {
+            Log.e(TAG, "buildBatchBody failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * One entry per requested line. Unparsable answers simply stay null.
+     */
+    static List<String> parseBatch(String responseBody, int size) {
+        List<String> result = new ArrayList<>(Collections.nCopies(size, (String) null));
+
+        if (responseBody == null) {
+            return result;
+        }
+
+        for (String line : responseBody.replace("```", "").split("\n")) {
+            Matcher matcher = BATCH_LINE.matcher(line.trim());
+
+            if (!matcher.matches()) {
+                continue;
+            }
+
+            int index = Integer.parseInt(matcher.group(1)) - 1;
+
+            if (index >= 0 && index < size) {
+                result.set(index, sanitize(matcher.group(2)));
+            }
+        }
+
+        return result;
     }
 
     static String parse(String responseBody) {

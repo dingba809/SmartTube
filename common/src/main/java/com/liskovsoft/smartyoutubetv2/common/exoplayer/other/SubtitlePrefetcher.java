@@ -1,0 +1,139 @@
+package com.liskovsoft.smartyoutubetv2.common.exoplayer.other;
+
+import android.util.Log;
+
+import com.liskovsoft.mediaserviceinterfaces.data.MediaSubtitle;
+import com.liskovsoft.sharedutils.okhttp.OkHttpManager;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+
+/**
+ * Downloads the whole subtitle file of the track being watched and translates it in batches
+ * ahead of playback, so {@link SubtitleManager} already finds the translations cached when
+ * ExoPlayer hands it a cue. ExoPlayer stays in charge of the timeline, which is what keeps the
+ * subtitles aligned.<br/>
+ * The first batches cover the beginning of the video, the rest follow as the loop runs, which
+ * is why the opening minutes are translated almost immediately.
+ */
+public class SubtitlePrefetcher {
+    private static final String TAG = SubtitlePrefetcher.class.getSimpleName();
+    private static final int BATCH_SIZE = 40;
+    private static final long DOWNLOAD_TIMEOUT_SEC = 30;
+    private static SubtitlePrefetcher sInstance;
+    private final SubtitleTranslator mTranslator = new SubtitleTranslator();
+    private volatile boolean mStopped = true;
+    private String mTrackId;
+    private List<MediaSubtitle> mSubtitles;
+
+    public static SubtitlePrefetcher instance() {
+        if (sInstance == null) {
+            sInstance = new SubtitlePrefetcher();
+        }
+
+        return sInstance;
+    }
+
+    /**
+     * Called when the format info of a new video arrives. Cancels a running job.
+     */
+    public void setSubtitles(List<MediaSubtitle> subtitles) {
+        mSubtitles = subtitles;
+        stop();
+    }
+
+    /**
+     * @param trackId {@code FormatItem.getFormatId()}, which is the caption track vssId
+     */
+    public void start(String apiUrl, String apiKey, String model, String targetLanguage,
+                      String trackId, SubtitleTranslationCache cache) {
+        if (trackId == null || mSubtitles == null) {
+            return;
+        }
+
+        if (trackId.equals(mTrackId) && !mStopped) {
+            return; // this track is already being fetched
+        }
+
+        stop();
+        mTrackId = trackId;
+        mStopped = false;
+
+        String url = findBaseUrl(trackId);
+
+        if (url == null) {
+            Log.e(TAG, "no subtitle url for track: " + trackId);
+            mStopped = true;
+            return;
+        }
+
+        new Thread(() -> {
+            List<String> texts = SubtitleVttParser.parse(download(url));
+            Log.i(TAG, "prefetch started, " + texts.size() + " lines");
+
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache);
+        }).start();
+    }
+
+    public void stop() {
+        mStopped = true;
+    }
+
+    private void translateNext(String apiUrl, String apiKey, String model, String targetLanguage,
+                              List<String> texts, int from, SubtitleTranslationCache cache) {
+        if (mStopped || from >= texts.size()) {
+            return;
+        }
+
+        int to = Math.min(from + BATCH_SIZE, texts.size());
+        final List<String> batch = new ArrayList<>(texts.subList(from, to));
+
+        mTranslator.translateBatch(apiUrl, apiKey, model, targetLanguage, batch, translations -> {
+            if (mStopped) {
+                return;
+            }
+
+            if (translations != null) {
+                for (int i = 0; i < batch.size(); i++) {
+                    cache.put(batch.get(i), translations.get(i));
+                }
+            }
+
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache);
+        });
+    }
+
+    private String findBaseUrl(String trackId) {
+        for (MediaSubtitle subtitle : mSubtitles) {
+            if (trackId.equals(subtitle.getVssId())) {
+                return subtitle.getBaseUrl();
+            }
+        }
+
+        return null;
+    }
+
+    private String download(String url) {
+        OkHttpClient client = OkHttpManager.instance().getClient().newBuilder()
+                .callTimeout(DOWNLOAD_TIMEOUT_SEC, TimeUnit.SECONDS)
+                .build();
+        Request request = new Request.Builder().url(url).build();
+
+        try (Response response = client.newCall(request).execute()) {
+            if (!response.isSuccessful()) {
+                Log.e(TAG, "download failed: HTTP " + response.code());
+                return null;
+            }
+
+            return response.body() != null ? response.body().string() : null;
+        } catch (Exception e) {
+            Log.e(TAG, "download failed: " + e.getMessage());
+            return null;
+        }
+    }
+}
