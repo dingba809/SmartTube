@@ -20,9 +20,12 @@ import com.liskovsoft.smartyoutubetv2.common.R;
 import com.liskovsoft.smartyoutubetv2.common.prefs.AppPrefs;
 import com.liskovsoft.smartyoutubetv2.common.prefs.common.DataChangeBase.OnDataChange;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.SubtitleTranslateData;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class SubtitleManager implements TextOutput, OnDataChange {
     private static final String TAG = SubtitleManager.class.getSimpleName();
@@ -31,6 +34,12 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private final List<SubtitleStyle> mSubtitleStyles = new ArrayList<>();
     private final AppPrefs mPrefs;
     private final PlayerData mPlayerData;
+    private final SubtitleTranslateData mTranslateData;
+    private final SubtitleTranslationCache mTranslationCache = new SubtitleTranslationCache();
+    private final Set<String> mPendingTranslations = new HashSet<>();
+    private final SubtitleTranslator mTranslator = new SubtitleTranslator();
+    private List<Cue> mLastCues = new ArrayList<>();
+    private long mCuesVersion;
     private CharSequence subsBuffer;
 
     public static class SubtitleStyle {
@@ -60,20 +69,94 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         mSubtitleView = subtitleView;
         mPrefs = AppPrefs.instance(mContext);
         mPlayerData = PlayerData.instance(mContext);
+        mTranslateData = SubtitleTranslateData.instance(mContext);
         mPlayerData.setOnChange(this);
+        mTranslateData.setOnChange(this);
         configureSubtitleView();
     }
 
     @Override
     public void onDataChange() {
         configureSubtitleView();
+        mTranslationCache.clear(); // target language or model may have changed
+        renderSubtitles();
     }
 
     @Override
     public void onCues(List<Cue> cues) {
         if (mSubtitleView != null) {
-            mSubtitleView.setCues(forceCenterAlignment(cues));
+            mLastCues = forceCenterAlignment(cues);
+            renderSubtitles();
         }
+    }
+
+    private void renderSubtitles() {
+        if (mSubtitleView == null) {
+            return;
+        }
+
+        if (!isTranslationEnabled()) {
+            mSubtitleView.setCues(mLastCues);
+            return;
+        }
+
+        // Bumping the version invalidates translations that are still in flight for a previous cue.
+        long version = ++mCuesVersion;
+        List<Cue> rendered = new ArrayList<>();
+
+        for (Cue cue : mLastCues) {
+            String source = cue.text.toString();
+            String translation = mTranslationCache.get(source);
+
+            if (translation != null) {
+                rendered.add(new Cue(join(source, translation)));
+            } else {
+                requestTranslation(source, version);
+                rendered.add(cue); // keep the original on screen until the translation lands
+            }
+        }
+
+        mSubtitleView.setCues(rendered);
+    }
+
+    private void requestTranslation(String source, long version) {
+        if (!isTranslatable(source) || !mPendingTranslations.add(source)) {
+            return;
+        }
+
+        mTranslator.translate(mTranslateData.getApiUrl(), mTranslateData.getApiKey(), mTranslateData.getModel(),
+                mTranslateData.getTargetLanguage(), source, translation -> {
+                    mPendingTranslations.remove(source);
+
+                    if (translation == null) {
+                        return;
+                    }
+
+                    mTranslationCache.put(source, translation);
+
+                    if (version == mCuesVersion) {
+                        renderSubtitles();
+                    }
+                });
+    }
+
+    private boolean isTranslationEnabled() {
+        return mTranslateData.isEnabled() && mTranslateData.isConfigured();
+    }
+
+    private CharSequence join(String source, String translation) {
+        return mTranslateData.isBilingual() ? source + "\n" + translation : translation;
+    }
+
+    /** Skip lines that hold no words (music notes, timestamps) to save API calls. */
+    private static boolean isTranslatable(String text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (Character.isLetter(text.charAt(i))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public void show(boolean show) {

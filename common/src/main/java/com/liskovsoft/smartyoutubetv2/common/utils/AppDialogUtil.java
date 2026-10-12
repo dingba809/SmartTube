@@ -35,6 +35,7 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.menu.VideoMe
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.menu.providers.channelgroup.ChannelGroupServiceWrapper;
 import com.liskovsoft.smartyoutubetv2.common.app.views.ViewManager;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.SubtitleManager.SubtitleStyle;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.SubtitleTranslator;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem.VideoPreset;
 import com.liskovsoft.smartyoutubetv2.common.misc.AppDataSourceManager;
@@ -44,6 +45,7 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.SponsorBlockData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.GeneralData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerTweaksData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.SubtitleTranslateData;
 import com.liskovsoft.youtubeapi.service.YouTubeMediaItemService;
 import com.liskovsoft.youtubeapi.playlist.impl.YouTubePlaylistInfo;
 
@@ -84,6 +86,9 @@ public class AppDialogUtil {
     private static final int SUBTITLE_SIZE_ID = 46;
     private static final int SUBTITLE_POSITION_ID = 47;
     private static final int FILE_PICKER_REQUEST_CODE = 205;
+    private static final String TRANSLATE_API_URL_HINT = "https://api.deepseek.com/v1";
+    private static final String TRANSLATE_MODEL_HINT = "deepseek-chat";
+    private static final String TRANSLATE_TEST_PHRASE = "Hello, world!";
 
     /**
      * Adds share link items to existing dialog.
@@ -526,6 +531,108 @@ public class AppDialogUtil {
                 optionItem -> playerData.setSubtitlesPerChannelEnabled(optionItem.isSelected()),
                 playerData.isSubtitlesPerChannelEnabled()
         );
+    }
+
+    /**
+     * Shared by the player's subtitle dialog and the subtitle settings screen.
+     */
+    public static void appendSubtitleTranslateOptions(AppDialogPresenter presenter, Context context) {
+        SubtitleTranslateData data = SubtitleTranslateData.instance(context);
+
+        presenter.appendSingleSwitch(UiOptionItem.from(
+                context.getString(R.string.subtitle_translate_enable),
+                option -> data.setEnabled(option.isSelected()),
+                data.isEnabled()));
+
+        List<OptionItem> modes = new ArrayList<>();
+        modes.add(UiOptionItem.from(context.getString(R.string.subtitle_translate_bilingual),
+                option -> data.setBilingual(true), data.isBilingual()));
+        modes.add(UiOptionItem.from(context.getString(R.string.subtitle_translate_translation_only),
+                option -> data.setBilingual(false), !data.isBilingual()));
+        presenter.appendRadioCategory(context.getString(R.string.subtitle_translate_mode), modes);
+
+        List<OptionItem> languages = new ArrayList<>();
+        for (String language : SubtitleTranslateData.TARGET_LANGUAGES) {
+            languages.add(UiOptionItem.from(language,
+                    option -> data.setTargetLanguage(language), language.equals(data.getTargetLanguage())));
+        }
+        presenter.appendRadioCategory(context.getString(R.string.subtitle_translate_language), languages);
+
+        presenter.appendSingleButton(UiOptionItem.from(
+                createTranslateApiButtonTitle(context, data),
+                option -> showTranslateApiDialog(context)));
+
+        presenter.appendSingleButton(UiOptionItem.from(
+                context.getString(R.string.subtitle_translate_test),
+                option -> testTranslateConnection(context)));
+    }
+
+    private static void testTranslateConnection(Context context) {
+        SubtitleTranslateData data = SubtitleTranslateData.instance(context);
+
+        if (!data.isConfigured()) {
+            MessageHelpers.showMessage(context, R.string.subtitle_translate_test_unconfigured);
+            return;
+        }
+
+        MessageHelpers.showMessage(context, R.string.subtitle_translate_test_running);
+
+        new SubtitleTranslator().translate(data.getApiUrl(), data.getApiKey(), data.getModel(),
+                data.getTargetLanguage(), TRANSLATE_TEST_PHRASE, translation -> {
+                    if (translation == null) {
+                        MessageHelpers.showMessage(context, R.string.subtitle_translate_test_failed);
+                    } else {
+                        MessageHelpers.showMessage(context, R.string.subtitle_translate_test_ok, translation);
+                    }
+                });
+    }
+
+    private static CharSequence createTranslateApiButtonTitle(Context context, SubtitleTranslateData data) {
+        String model = data.getModel();
+        String title = context.getString(R.string.subtitle_translate_api);
+
+        return model == null || model.trim().isEmpty() ? title : title + ": " + model.trim();
+    }
+
+    private static void showTranslateApiDialog(Context context) {
+        SubtitleTranslateData data = SubtitleTranslateData.instance(context);
+
+        SimpleEditDialog.show(context,
+                context.getString(R.string.subtitle_translate_api_url),
+                TRANSLATE_API_URL_HINT,
+                data.getApiUrl(),
+                url -> {
+                    data.setApiUrl(url.trim());
+                    showTranslateApiKeyDialog(context);
+                    return true;
+                });
+    }
+
+    private static void showTranslateApiKeyDialog(Context context) {
+        SubtitleTranslateData data = SubtitleTranslateData.instance(context);
+
+        // Optional: local model servers (Ollama, LM Studio) need no key.
+        SimpleEditDialog.showOptionalPassword(context,
+                context.getString(R.string.subtitle_translate_api_key),
+                data.getApiKey(),
+                key -> {
+                    data.setApiKey(key.trim());
+                    showTranslateModelDialog(context);
+                    return true;
+                });
+    }
+
+    private static void showTranslateModelDialog(Context context) {
+        SubtitleTranslateData data = SubtitleTranslateData.instance(context);
+
+        SimpleEditDialog.show(context,
+                context.getString(R.string.subtitle_translate_model),
+                TRANSLATE_MODEL_HINT,
+                data.getModel(),
+                model -> {
+                    data.setModel(model.trim());
+                    return true;
+                });
     }
 
     @TargetApi(19)

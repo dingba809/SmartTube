@@ -28,6 +28,15 @@ public class SimpleEditDialog {
         show(context, dialogTitle, dialogHint, defaultValue, onChange, onDismiss, false);
     }
 
+    /** Same as {@link #show}, but an empty value can be submitted (e.g. a keyless local model server). */
+    public static void showOptional(Context context, String dialogTitle, String dialogHint, String defaultValue, OnChange onChange) {
+        show(context, dialogTitle, dialogHint, defaultValue, onChange, null, false, true);
+    }
+
+    public static void showOptionalPassword(Context context, String dialogTitle, String defaultValue, OnChange onChange) {
+        show(context, dialogTitle, dialogTitle, defaultValue, onChange, null, true, true);
+    }
+
     public static void showPassword(Context context, String dialogTitle, String defaultValue, OnChange onChange) {
         showPassword(context, dialogTitle, defaultValue, onChange, null);
     }
@@ -37,6 +46,10 @@ public class SimpleEditDialog {
     }
 
     private static void show(Context context, String dialogTitle, String dialogHint, String defaultValue, OnChange onChange, Runnable onDismiss, boolean isPassword) {
+        show(context, dialogTitle, dialogHint, defaultValue, onChange, onDismiss, isPassword, false);
+    }
+
+    private static void show(Context context, String dialogTitle, String dialogHint, String defaultValue, OnChange onChange, Runnable onDismiss, boolean isPassword, boolean allowEmpty) {
         AlertDialog.Builder builder = new AlertDialog.Builder(context, R.style.AppDialog);
         LayoutInflater inflater = LayoutInflater.from(context);
         View contentView = inflater.inflate(R.layout.simple_edit_dialog, null);
@@ -93,7 +106,7 @@ public class SimpleEditDialog {
         configDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener((view) -> {
             String newValue = editField.getText().toString();
 
-            if (newValue.isEmpty()) {
+            if (newValue.isEmpty() && !allowEmpty) {
                 // Empty fields not allowed
                 editField.setHint(R.string.enter_value);
                 return;
