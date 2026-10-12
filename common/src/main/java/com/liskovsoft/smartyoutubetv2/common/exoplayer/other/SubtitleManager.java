@@ -44,6 +44,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private List<Cue> mLastCues = new ArrayList<>();
     private long mCuesVersion;
     private boolean mPrefetchStarted;
+    private String mTranslateConfig;
 
     public static class SubtitleStyle {
         public final int nameResId;
@@ -75,13 +76,25 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         mTranslateData = SubtitleTranslateData.instance(mContext);
         mPlayerData.setOnChange(this);
         mTranslateData.setOnChange(this);
+        mTranslateConfig = buildTranslateConfig();
         configureSubtitleView();
     }
 
     @Override
     public void onDataChange() {
         configureSubtitleView();
-        mTranslationCache.clear(); // target language or model may have changed
+
+        // PlayerData fires on every playback tweak, so only restart when the translation
+        // settings themselves changed. Clearing the cache on every callback threw away work
+        // that was still in flight and kept the translations behind the audio.
+        String config = buildTranslateConfig();
+
+        if (config.equals(mTranslateConfig)) {
+            return;
+        }
+
+        mTranslateConfig = config;
+        mTranslationCache.clear();
         SubtitlePrefetcher.instance().stop();
         mPrefetchStarted = false;
         renderSubtitles();
@@ -155,7 +168,13 @@ public class SubtitleManager implements TextOutput, OnDataChange {
                 rendered.add(new Cue(join(source, translation)));
             } else {
                 requestTranslation(source, version);
-                rendered.add(cue); // keep the original on screen until the translation lands
+
+                // Keep the original on screen until the translation lands, but only when the
+                // user asked for both lines: in translation only mode showing the original
+                // first looks like the subtitle flickering between two languages.
+                if (mTranslateData.isBilingual()) {
+                    rendered.add(cue);
+                }
             }
         }
 
@@ -181,6 +200,11 @@ public class SubtitleManager implements TextOutput, OnDataChange {
                         renderSubtitles();
                     }
                 });
+    }
+
+    private String buildTranslateConfig() {
+        return mTranslateData.isEnabled() + "|" + mTranslateData.getTargetLanguage()
+                + "|" + mTranslateData.getModel() + "|" + mTranslateData.getApiUrl();
     }
 
     private boolean isTranslationEnabled() {

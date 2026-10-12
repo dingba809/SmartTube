@@ -40,11 +40,11 @@ public class SubtitlePrefetcher {
     }
 
     /**
-     * Called when the format info of a new video arrives. Cancels a running job.
+     * Called when the format info of a new video arrives. Deliberately does not cancel a running
+     * job: this is also called when the player is merely reconfigured.
      */
     public void setSubtitles(List<MediaSubtitle> subtitles) {
         mSubtitles = subtitles;
-        stop();
     }
 
     /**
@@ -91,7 +91,19 @@ public class SubtitlePrefetcher {
         }
 
         int to = Math.min(from + BATCH_SIZE, texts.size());
-        final List<String> batch = new ArrayList<>(texts.subList(from, to));
+        final List<String> batch = new ArrayList<>();
+
+        // Skip what is already translated, so a restarted job does not pay for it twice.
+        for (String text : texts.subList(from, to)) {
+            if (cache.get(text) == null) {
+                batch.add(text);
+            }
+        }
+
+        if (batch.isEmpty()) {
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache);
+            return;
+        }
 
         mTranslator.translateBatch(apiUrl, apiKey, model, targetLanguage, batch, translations -> {
             if (mStopped) {
@@ -103,6 +115,8 @@ public class SubtitlePrefetcher {
                     cache.put(batch.get(i), translations.get(i));
                 }
             }
+
+            Log.i(TAG, "prefetch progress: " + to + "/" + texts.size());
 
             translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache);
         });
