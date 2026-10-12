@@ -70,7 +70,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Build with Gradle
-        run: ./gradlew clean assembleStbetaRelease
+        run: ./gradlew clean assembleStbetaRelease assembleStbetaDebug
 
       - name: VirusTotal Scan
         if: ${{ env.HAS_VT_KEY == 'true' }}
@@ -129,4 +129,13 @@ jobs:
         with:
           name: SmartTube_${{ steps.get_version.outputs.VERSION_NAME }}_x86
           path: ./smarttubetv/build/outputs/apk/stbeta/release/*_x86.apk
+          if-no-files-found: error
+
+      # The release APKs above are UNSIGNED (no keystore secrets on a fork). Debug variants
+      # are signed with the runner's debug keystore, so this one can be sideloaded as is.
+      - name: Upload Debug Universal APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SmartTube_debug_${{ steps.get_version.outputs.VERSION_NAME }}_universal
+          path: ./smarttubetv/build/outputs/apk/stbeta/debug/*_universal.apk
           if-no-files-found: error
