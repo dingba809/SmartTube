@@ -4,8 +4,10 @@ import android.util.Log;
 
 import com.liskovsoft.mediaserviceinterfaces.data.MediaSubtitle;
 import com.liskovsoft.sharedutils.okhttp.OkHttpManager;
+import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
@@ -48,11 +50,14 @@ public class SubtitlePrefetcher {
     }
 
     /**
-     * @param trackId {@code FormatItem.getFormatId()}, which is the caption track vssId
+     * @param trackId     {@code FormatItem.getFormatId()}, which is the caption track vssId
+     * @param onReady     called once the first batch is translated, or right away when the
+     *                    prefetch cannot run. Playback waits on this.
      */
     public void start(String apiUrl, String apiKey, String model, String targetLanguage,
-                      String trackId, SubtitleTranslationCache cache) {
+                      String trackId, SubtitleTranslationCache cache, Runnable onReady) {
         if (trackId == null || mSubtitles == null) {
+            runOnReady(onReady);
             return;
         }
 
@@ -69,15 +74,38 @@ public class SubtitlePrefetcher {
         if (url == null) {
             Log.e(TAG, "no subtitle url for track: " + trackId);
             mStopped = true;
+            runOnReady(onReady);
             return;
         }
 
-        new Thread(() -> {
-            List<String> texts = SubtitleVttParser.parse(download(url));
-            Log.i(TAG, "prefetch started, " + texts.size() + " lines");
+        Log.i(TAG, "prefetch url: " + url);
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache);
+        new Thread(() -> {
+            String vtt = download(url);
+            List<String> texts = SubtitleVttParser.parse(vtt);
+            Log.i(TAG, "prefetch started, " + texts.size() + " lines");
+            Log.i(TAG, "prefetch sample: " + sample(texts));
+            Log.i(TAG, "raw vtt sample: " + sample(Arrays.asList(vtt != null ? vtt.split("\n") : new String[0])));
+
+            if (texts.isEmpty()) {
+                runOnReady(onReady);
+                return;
+            }
+
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache,
+                    () -> runOnReady(onReady));
         }).start();
+    }
+
+    private static void runOnReady(Runnable onReady) {
+        if (onReady != null) {
+            Utils.post(onReady);
+        }
+    }
+
+    /** First few entries of a list, for comparing what the two sides see. */
+    private static List<String> sample(List<String> items) {
+        return items.subList(0, Math.min(3, items.size()));
     }
 
     public void stop() {
@@ -85,7 +113,8 @@ public class SubtitlePrefetcher {
     }
 
     private void translateNext(String apiUrl, String apiKey, String model, String targetLanguage,
-                              List<String> texts, int from, SubtitleTranslationCache cache) {
+                              List<String> texts, int from, SubtitleTranslationCache cache,
+                              Runnable onFirstBatch) {
         if (mStopped || from >= texts.size()) {
             return;
         }
@@ -101,7 +130,11 @@ public class SubtitlePrefetcher {
         }
 
         if (batch.isEmpty()) {
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache);
+            if (from == 0 && onFirstBatch != null) {
+                runOnReady(onFirstBatch);
+            }
+
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null);
             return;
         }
 
@@ -118,7 +151,11 @@ public class SubtitlePrefetcher {
 
             Log.i(TAG, "prefetch progress: " + to + "/" + texts.size());
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache);
+            if (onFirstBatch != null) {
+                runOnReady(onFirstBatch);
+            }
+
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null);
         });
     }
 

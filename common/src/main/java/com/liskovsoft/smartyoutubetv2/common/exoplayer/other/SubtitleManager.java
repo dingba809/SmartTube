@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build.VERSION;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.accessibility.CaptioningManager;
@@ -23,14 +24,20 @@ import com.liskovsoft.smartyoutubetv2.common.prefs.AppPrefs;
 import com.liskovsoft.smartyoutubetv2.common.prefs.common.DataChangeBase.OnDataChange;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SubtitleTranslateData;
+import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SubtitleManager implements TextOutput, OnDataChange {
     private static final String TAG = SubtitleManager.class.getSimpleName();
+    /** How long playback may wait for the opening lines before giving up. */
+    private static final long PREFETCH_WAIT_MS = 15_000;
+    /** How many untranslated cues to log, to compare against what the prefetcher parsed. */
+    private static final int LOGGED_MISSES = 3;
     private final SubtitleView mSubtitleView;
     private final Context mContext;
     private final List<SubtitleStyle> mSubtitleStyles = new ArrayList<>();
@@ -45,6 +52,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private long mCuesVersion;
     private boolean mPrefetchStarted;
     private String mTranslateConfig;
+    private int mMissLogged;
 
     public static class SubtitleStyle {
         public final int nameResId;
@@ -121,9 +129,30 @@ public class SubtitleManager implements TextOutput, OnDataChange {
 
         mPrefetchStarted = true;
 
+        PlaybackView player = PlaybackPresenter.instance(mContext).getPlayer();
+
+        if (player == null) {
+            return;
+        }
+
+        // Hold playback until the opening lines are translated. Playing straight away is what
+        // made the first subtitles show up after the audio they belong to.
+        player.setPlayWhenReady(false);
+
+        final AtomicBoolean resumed = new AtomicBoolean();
+        Runnable resume = () -> {
+            if (resumed.compareAndSet(false, true)) {
+                player.setPlayWhenReady(true);
+            }
+        };
+
+        // Never leave the player paused: give up waiting after a while and fall back to the
+        // per cue translation.
+        Utils.postDelayed(resume, PREFETCH_WAIT_MS);
+
         SubtitlePrefetcher.instance().start(mTranslateData.getApiUrl(), mTranslateData.getApiKey(),
                 mTranslateData.getModel(), mTranslateData.getTargetLanguage(),
-                getSelectedTrackId(), mTranslationCache);
+                getSelectedTrackId(), mTranslationCache, resume);
     }
 
     /**
@@ -167,6 +196,11 @@ public class SubtitleManager implements TextOutput, OnDataChange {
             if (translation != null) {
                 rendered.add(new Cue(join(source, translation)));
             } else {
+                if (mMissLogged < LOGGED_MISSES) {
+                    mMissLogged++;
+                    Log.i(TAG, "cache miss: [" + source + "]");
+                }
+
                 requestTranslation(source, version);
 
                 // Keep the original on screen until the translation lands, but only when the
