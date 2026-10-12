@@ -3,7 +3,6 @@ package com.liskovsoft.smartyoutubetv2.common.exoplayer.other;
 import org.junit.Test;
 
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 
 import static org.junit.Assert.assertEquals;
@@ -168,16 +167,9 @@ public class SubtitleTranslationTest {
     }
 
     @Test
-    public void buildBatchBodyNumbersEachLineAndFlattensMultilineCues() {
-        String body = SubtitleTranslator.buildBatchBody("m", "简体中文", Arrays.asList("one", "two\nlines"));
+    public void batchMessageNumbersEachLineAndFlattensMultilineCues() {
+        String message = SubtitleTranslator.buildBatchUserMessage(Arrays.asList("one", "two\nlines"));
 
-        assertTrue(body, body.contains("[1] one"));
-        assertTrue(body, body.contains("[2] two lines"));
-    }
-
-    @Test
-    public void buildBatchBodyKeepsTargetLanguage() {
-        assertTrue(SubtitleTranslator.buildBatchBody("m", "日本語", Collections.singletonList("one"))
-                .contains("日本語"));
+        assertEquals("[1] one\n[2] two lines", message);
     }
 }

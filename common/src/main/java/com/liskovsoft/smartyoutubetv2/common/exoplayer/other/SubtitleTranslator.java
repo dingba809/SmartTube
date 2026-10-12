@@ -173,6 +173,32 @@ public class SubtitleTranslator {
     }
 
     static String buildBatchBody(String model, String targetLanguage, List<String> texts) {
+        try {
+            JSONObject system = new JSONObject()
+                    .put("role", "system")
+                    .put("content", "You translate subtitle lines into " + targetLanguage
+                            + ". The user sends numbered lines. Reply with the same numbers, one"
+                            + " translation per line, nothing else. Keep the line count identical.");
+            JSONObject message = new JSONObject()
+                    .put("role", "user")
+                    .put("content", buildBatchUserMessage(texts));
+
+            return new JSONObject()
+                    .put("model", model)
+                    .put("temperature", 0.2)
+                    .put("messages", new JSONArray().put(system).put(message))
+                    .toString();
+        } catch (JSONException e) {
+            Log.e(TAG, "buildBatchBody failed: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Plain text on purpose: the JSON wrapper around it cannot be unit tested, since
+     * {@code org.json} is an Android class with no real implementation on the JVM.
+     */
+    static String buildBatchUserMessage(List<String> texts) {
         StringBuilder user = new StringBuilder();
 
         for (int i = 0; i < texts.size(); i++) {
@@ -184,25 +210,7 @@ public class SubtitleTranslator {
             user.append('[').append(i + 1).append("] ").append(texts.get(i).replace('\n', ' '));
         }
 
-        try {
-            JSONObject system = new JSONObject()
-                    .put("role", "system")
-                    .put("content", "You translate subtitle lines into " + targetLanguage
-                            + ". The user sends numbered lines. Reply with the same numbers, one"
-                            + " translation per line, nothing else. Keep the line count identical.");
-            JSONObject message = new JSONObject()
-                    .put("role", "user")
-                    .put("content", user.toString());
-
-            return new JSONObject()
-                    .put("model", model)
-                    .put("temperature", 0.2)
-                    .put("messages", new JSONArray().put(system).put(message))
-                    .toString();
-        } catch (JSONException e) {
-            Log.e(TAG, "buildBatchBody failed: " + e.getMessage());
-            return null;
-        }
+        return user.toString();
     }
 
     /**
