@@ -156,26 +156,27 @@ public class PlayerUIController extends BasePlayerController {
 
         boolean enabled = buttonState == PlayerUI.BUTTON_ON;
 
-        // First run
-        if (FormatItem.SUBTITLE_NONE.equals(getPlayerData().getLastSubtitleFormat())) {
-            onSubtitleLongClicked();
-            return;
-        }
-
-        // Only default in the list
-        if (getPlayer().getSubtitleFormats() == null || getPlayer().getSubtitleFormats().size() == 1) {
-            return;
-        }
-
         FormatItem matchedFormat = null;
 
         // Switching captions on picks by language preference: Chinese as is, otherwise English
-        // as the source for the AI translation.
+        // as the source for the AI translation. This has to run before the "first run" check
+        // below, which otherwise pops the picker up and returns on every fresh install.
         if (!enabled) {
             matchedFormat = pickPreferredFormat();
         }
 
         if (matchedFormat == null) {
+            // First run
+            if (FormatItem.SUBTITLE_NONE.equals(getPlayerData().getLastSubtitleFormat())) {
+                onSubtitleLongClicked();
+                return;
+            }
+
+            // Only default in the list
+            if (getPlayer().getSubtitleFormats() == null || getPlayer().getSubtitleFormats().size() == 1) {
+                return;
+            }
+
             for (FormatItem item : getPlayerData().getLastSubtitleFormats()) {
                 if (getPlayer().getSubtitleFormats().contains(item)) {
                     matchedFormat = item;
@@ -203,10 +204,13 @@ public class PlayerUIController extends BasePlayerController {
      */
     private FormatItem pickPreferredFormat() {
         if (getPlayer() == null) {
+            Log.i(TAG, "subtitle preference: no player");
             return null;
         }
 
         List<FormatItem> formats = getPlayer().getSubtitleFormats();
+
+        Log.i(TAG, "subtitle formats: " + (formats == null ? "null" : String.valueOf(formats.size())));
 
         if (formats == null) {
             return null;
