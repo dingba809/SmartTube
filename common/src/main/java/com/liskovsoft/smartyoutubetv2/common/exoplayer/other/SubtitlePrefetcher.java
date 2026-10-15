@@ -42,6 +42,13 @@ public class SubtitlePrefetcher {
     }
 
     /**
+     * The caption tracks of the video being played. Null until its format info arrives.
+     */
+    public SubtitleTrackPreference.Pick pickPreferredTrack() {
+        return SubtitleTrackPreference.pick(mSubtitles);
+    }
+
+    /**
      * Called when the format info of a new video arrives. Deliberately does not cancel a running
      * job: this is also called when the player is merely reconfigured.
      */

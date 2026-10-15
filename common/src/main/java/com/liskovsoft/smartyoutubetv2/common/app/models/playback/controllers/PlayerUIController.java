@@ -33,11 +33,14 @@ import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.menu.VideoMe
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.dialogs.menu.VideoMenuPresenter.VideoMenuCallback;
 import com.liskovsoft.smartyoutubetv2.common.app.presenters.settings.AutoFrameRateSettingsPresenter;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.FormatItem;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.SubtitlePrefetcher;
+import com.liskovsoft.smartyoutubetv2.common.exoplayer.other.SubtitleTrackPreference;
 import com.liskovsoft.smartyoutubetv2.common.exoplayer.selector.track.SubtitleTrack;
 import com.liskovsoft.smartyoutubetv2.common.misc.MediaServiceManager;
 import com.liskovsoft.smartyoutubetv2.common.misc.ScreensaverManager;
 import com.liskovsoft.smartyoutubetv2.common.prefs.PlayerData;
 import com.liskovsoft.smartyoutubetv2.common.prefs.SearchData;
+import com.liskovsoft.smartyoutubetv2.common.prefs.SubtitleTranslateData;
 import com.liskovsoft.smartyoutubetv2.common.utils.AppDialogUtil;
 import com.liskovsoft.smartyoutubetv2.common.utils.Utils;
 import com.liskovsoft.youtubeapi.service.YouTubeServiceManager;
@@ -166,10 +169,18 @@ public class PlayerUIController extends BasePlayerController {
 
         FormatItem matchedFormat = null;
 
-        for (FormatItem item : getPlayerData().getLastSubtitleFormats()) {
-            if (getPlayer().getSubtitleFormats().contains(item)) {
-                matchedFormat = item;
-                break;
+        // Switching captions on picks by language preference: Chinese as is, otherwise English
+        // as the source for the AI translation.
+        if (!enabled) {
+            matchedFormat = pickPreferredFormat();
+        }
+
+        if (matchedFormat == null) {
+            for (FormatItem item : getPlayerData().getLastSubtitleFormats()) {
+                if (getPlayer().getSubtitleFormats().contains(item)) {
+                    matchedFormat = item;
+                    break;
+                }
             }
         }
 
@@ -184,6 +195,32 @@ public class PlayerUIController extends BasePlayerController {
             // Match not found
             onSubtitleLongClicked();
         }
+    }
+
+    /**
+     * @return the track the language preference points at, or null when the video has neither a
+     * Chinese nor an English track and the caller should fall back to the remembered choice
+     */
+    private FormatItem pickPreferredFormat() {
+        if (getPlayer() == null || getPlayer().getSubtitleFormats() == null) {
+            return null;
+        }
+
+        SubtitleTrackPreference.Pick pick = SubtitlePrefetcher.instance().pickPreferredTrack();
+
+        if (pick == null || pick.vssId == null) {
+            return null;
+        }
+
+        for (FormatItem format : getPlayer().getSubtitleFormats()) {
+            if (pick.vssId.equals(format.getFormatId())) {
+                // A Chinese track is watched as is, anything else is fed to the translator.
+                SubtitleTranslateData.instance(getContext()).setEnabled(pick.translate);
+                return format;
+            }
+        }
+
+        return null;
     }
 
     private void onSubtitleLongClicked() {
