@@ -5,6 +5,7 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build.VERSION;
 import android.util.Log;
+import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.accessibility.CaptioningManager;
@@ -47,12 +48,15 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private final SubtitleTranslationCache mTranslationCache = new SubtitleTranslationCache();
     private final Set<String> mPendingTranslations = new HashSet<>();
     private final SubtitleTranslator mTranslator = new SubtitleTranslator();
-    private final SubtitleTextDeduplicator mDeduplicator = new SubtitleTextDeduplicator();
+    private SubtitleTextDeduplicator mDeduplicator = new SubtitleTextDeduplicator();
     private List<Cue> mLastCues = new ArrayList<>();
     private long mCuesVersion;
     private boolean mPrefetchStarted;
     private String mTranslateConfig;
     private int mMissLogged;
+    private String mTrackKey;
+    private long mTranslationGeneration;
+    private Runnable mResumePlayback;
 
     public static class SubtitleStyle {
         public final int nameResId;
@@ -91,6 +95,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     @Override
     public void onDataChange() {
         configureSubtitleView();
+        updateSubtitleTrack();
 
         // PlayerData fires on every playback tweak, so only restart when the translation
         // settings themselves changed. Clearing the cache on every callback threw away work
@@ -102,15 +107,14 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         }
 
         mTranslateConfig = config;
-        mTranslationCache.clear();
-        SubtitlePrefetcher.instance().stop();
-        mPrefetchStarted = false;
+        resetTranslation();
         renderSubtitles();
     }
 
     @Override
     public void onCues(List<Cue> cues) {
         if (mSubtitleView != null) {
+            updateSubtitleTrack();
             mLastCues = forceCenterAlignment(cues);
             startPrefetchIfNeeded();
             renderSubtitles();
@@ -127,52 +131,58 @@ public class SubtitleManager implements TextOutput, OnDataChange {
             return;
         }
 
-        mPrefetchStarted = true;
-
         PlaybackView player = PlaybackPresenter.instance(mContext).getPlayer();
-
-        if (player == null) {
+        FormatItem selected = player != null ? player.getSubtitleFormat() : null;
+        if (selected == null || selected.isDefault()) {
             return;
         }
-
-        // Hold playback until the opening lines are translated. Playing straight away is what
-        // made the first subtitles show up after the audio they belong to.
+        mPrefetchStarted = true;
+        boolean wasPlaying = player.getPlayWhenReady();
         player.setPlayWhenReady(false);
-
+        long generation = mTranslationGeneration;
         final AtomicBoolean resumed = new AtomicBoolean();
         Runnable resume = () -> {
-            if (resumed.compareAndSet(false, true)) {
-                player.setPlayWhenReady(true);
+            if (generation == mTranslationGeneration && resumed.compareAndSet(false, true)) {
+                Utils.removeCallbacks(mResumePlayback);
+                mResumePlayback = null;
+                renderSubtitles();
+                if (wasPlaying && PlaybackPresenter.instance(mContext).getPlayer() == player) {
+                    player.setPlayWhenReady(true);
+                }
             }
         };
-
-        // Never leave the player paused: give up waiting after a while and fall back to the
-        // per cue translation.
+        mResumePlayback = resume;
         Utils.postDelayed(resume, PREFETCH_WAIT_MS);
-
         SubtitlePrefetcher.instance().start(mTranslateData.getApiUrl(), mTranslateData.getApiKey(),
                 mTranslateData.getModel(), mTranslateData.getTargetLanguage(),
-                getSelectedTrackId(), mTranslationCache, resume);
+                selected.getFormatId(), selected.getLanguage(), mTranslationCache, resume);
     }
 
-    /**
-     * @return {@code FormatItem.getFormatId()} of the subtitle track being played, which is the
-     * caption track vssId and therefore matches {@code MediaSubtitle.getVssId()}
-     */
-    private String getSelectedTrackId() {
+    private void updateSubtitleTrack() {
         PlaybackView player = PlaybackPresenter.instance(mContext).getPlayer();
-
-        if (player == null) {
-            return null;
+        FormatItem selected = player != null ? player.getSubtitleFormat() : null;
+        String key = selected == null || selected.isDefault() ? null
+                : selected.getFormatId() + "|" + selected.getLanguage();
+        if (!TextUtils.equals(key, mTrackKey)) {
+            mTrackKey = key;
+            resetTranslation();
+            mDeduplicator = new SubtitleTextDeduplicator();
+            mLastCues = new ArrayList<>();
         }
+    }
 
-        for (FormatItem format : player.getSubtitleFormats()) {
-            if (format.isSelected() && !format.isDefault()) {
-                return format.getFormatId();
-            }
+    private void resetTranslation() {
+        // Finish only a pause owned by this manager, then invalidate every old-track callback.
+        if (mResumePlayback != null) {
+            mResumePlayback.run();
         }
-
-        return null;
+        mTranslationGeneration++;
+        mCuesVersion++;
+        mTranslationCache.clear();
+        mPendingTranslations.clear();
+        SubtitlePrefetcher.instance().stop();
+        mPrefetchStarted = false;
+        mMissLogged = 0;
     }
 
     private void renderSubtitles() {
@@ -220,8 +230,12 @@ public class SubtitleManager implements TextOutput, OnDataChange {
             return;
         }
 
+        long generation = mTranslationGeneration;
         mTranslator.translate(mTranslateData.getApiUrl(), mTranslateData.getApiKey(), mTranslateData.getModel(),
                 mTranslateData.getTargetLanguage(), source, translation -> {
+                    if (generation != mTranslationGeneration) {
+                        return;
+                    }
                     mPendingTranslations.remove(source);
 
                     if (translation == null) {

@@ -31,6 +31,8 @@ public class SubtitlePrefetcher {
     private final SubtitleTranslator mTranslator = new SubtitleTranslator();
     private volatile boolean mStopped = true;
     private String mTrackId;
+    private String mTrackName;
+    private long mGeneration;
     private List<MediaSubtitle> mSubtitles;
 
     public static SubtitlePrefetcher instance() {
@@ -49,27 +51,34 @@ public class SubtitlePrefetcher {
         mSubtitles = subtitles;
     }
 
+    public MediaSubtitle findSubtitle(String trackId, String trackName) {
+        return SubtitleTrackPreference.findSubtitle(mSubtitles, trackId, trackName);
+    }
+
     /**
      * @param trackId     {@code FormatItem.getFormatId()}, which is the caption track vssId
      * @param onReady     called once the first batch is translated, or right away when the
      *                    prefetch cannot run. Playback waits on this.
      */
     public void start(String apiUrl, String apiKey, String model, String targetLanguage,
-                      String trackId, SubtitleTranslationCache cache, Runnable onReady) {
+                      String trackId, String trackName, SubtitleTranslationCache cache, Runnable onReady) {
         if (trackId == null || mSubtitles == null) {
             runOnReady(onReady);
             return;
         }
 
-        if (trackId.equals(mTrackId) && !mStopped) {
+        if (trackId.equals(mTrackId) && (trackName == null ? mTrackName == null : trackName.equals(mTrackName)) && !mStopped) {
             return; // this track is already being fetched
         }
 
         stop();
         mTrackId = trackId;
+        mTrackName = trackName;
         mStopped = false;
+        long generation = mGeneration;
 
-        String url = findBaseUrl(trackId);
+        MediaSubtitle subtitle = findSubtitle(trackId, trackName);
+        String url = subtitle != null ? subtitle.getBaseUrl() : null;
 
         if (url == null) {
             Log.e(TAG, "no subtitle url for track: " + trackId);
@@ -77,8 +86,6 @@ public class SubtitlePrefetcher {
             runOnReady(onReady);
             return;
         }
-
-        Log.i(TAG, "prefetch url: " + url);
 
         new Thread(() -> {
             String vtt = download(url);
@@ -92,8 +99,12 @@ public class SubtitlePrefetcher {
                 return;
             }
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache,
-                    () -> runOnReady(onReady));
+            Utils.post(() -> {
+                if (generation == mGeneration && !mStopped) {
+                    translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache,
+                            onReady, generation);
+                }
+            });
         }).start();
     }
 
@@ -110,12 +121,13 @@ public class SubtitlePrefetcher {
 
     public void stop() {
         mStopped = true;
+        mGeneration++;
     }
 
     private void translateNext(String apiUrl, String apiKey, String model, String targetLanguage,
                               List<String> texts, int from, SubtitleTranslationCache cache,
-                              Runnable onFirstBatch) {
-        if (mStopped || from >= texts.size()) {
+                              Runnable onFirstBatch, long generation) {
+        if (mStopped || generation != mGeneration || from >= texts.size()) {
             return;
         }
 
@@ -134,12 +146,12 @@ public class SubtitlePrefetcher {
                 runOnReady(onFirstBatch);
             }
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null);
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation);
             return;
         }
 
         mTranslator.translateBatch(apiUrl, apiKey, model, targetLanguage, batch, translations -> {
-            if (mStopped) {
+            if (mStopped || generation != mGeneration) {
                 return;
             }
 
@@ -155,18 +167,8 @@ public class SubtitlePrefetcher {
                 runOnReady(onFirstBatch);
             }
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null);
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation);
         });
-    }
-
-    private String findBaseUrl(String trackId) {
-        for (MediaSubtitle subtitle : mSubtitles) {
-            if (trackId.equals(subtitle.getVssId())) {
-                return subtitle.getBaseUrl();
-            }
-        }
-
-        return null;
     }
 
     private String download(String url) {
