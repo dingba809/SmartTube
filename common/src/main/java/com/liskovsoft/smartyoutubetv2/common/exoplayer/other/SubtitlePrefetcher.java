@@ -102,7 +102,7 @@ public class SubtitlePrefetcher {
             Utils.post(() -> {
                 if (generation == mGeneration && !mStopped) {
                     translateNext(apiUrl, apiKey, model, targetLanguage, texts, 0, cache,
-                            onReady, generation);
+                            onReady, generation, 0);
                 }
             });
         }).start();
@@ -126,7 +126,7 @@ public class SubtitlePrefetcher {
 
     private void translateNext(String apiUrl, String apiKey, String model, String targetLanguage,
                               List<String> texts, int from, SubtitleTranslationCache cache,
-                              Runnable onFirstBatch, long generation) {
+                              Runnable onFirstBatch, long generation, int attempt) {
         if (mStopped || generation != mGeneration || from >= texts.size()) {
             return;
         }
@@ -146,7 +146,7 @@ public class SubtitlePrefetcher {
                 runOnReady(onFirstBatch);
             }
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation);
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation, 0);
             return;
         }
 
@@ -156,18 +156,30 @@ public class SubtitlePrefetcher {
             }
 
             if (translations != null) {
-                for (int i = 0; i < batch.size(); i++) {
+                for (int i = 0; i < batch.size() && i < translations.size(); i++) {
                     cache.put(batch.get(i), translations.get(i));
                 }
             }
 
-            Log.i(TAG, "prefetch progress: " + to + "/" + texts.size());
+            int missing = 0;
+            for (String text : batch) {
+                if (cache.get(text) == null) {
+                    missing++;
+                }
+            }
+            if (missing > 0 && attempt == 0) {
+                Log.w(TAG, "retrying " + missing + " missing translations at " + from);
+                translateNext(apiUrl, apiKey, model, targetLanguage, texts, from, cache,
+                        onFirstBatch, generation, 1);
+                return;
+            }
+            Log.i(TAG, "prefetch processed: " + to + "/" + texts.size() + ", missing=" + missing);
 
             if (onFirstBatch != null) {
                 runOnReady(onFirstBatch);
             }
 
-            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation);
+            translateNext(apiUrl, apiKey, model, targetLanguage, texts, to, cache, null, generation, 0);
         });
     }
 

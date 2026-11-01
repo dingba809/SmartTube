@@ -45,16 +45,18 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private final AppPrefs mPrefs;
     private final PlayerData mPlayerData;
     private final SubtitleTranslateData mTranslateData;
-    private final SubtitleTranslationCache mTranslationCache = new SubtitleTranslationCache();
+    private final Runnable mRenderSubtitles = this::renderSubtitles;
+    private final SubtitleTranslationCache mTranslationCache =
+            new SubtitleTranslationCache(() -> Utils.post(mRenderSubtitles));
     private final Set<String> mPendingTranslations = new HashSet<>();
     private final SubtitleTranslator mTranslator = new SubtitleTranslator();
     private SubtitleTextDeduplicator mDeduplicator = new SubtitleTextDeduplicator();
     private List<Cue> mLastCues = new ArrayList<>();
-    private long mCuesVersion;
     private boolean mPrefetchStarted;
     private String mTranslateConfig;
     private int mMissLogged;
     private String mTrackKey;
+    private boolean mReleased;
     private long mTranslationGeneration;
     private Runnable mResumePlayback;
 
@@ -94,6 +96,9 @@ public class SubtitleManager implements TextOutput, OnDataChange {
 
     @Override
     public void onDataChange() {
+        if (mReleased) {
+            return;
+        }
         configureSubtitleView();
         updateSubtitleTrack();
 
@@ -103,6 +108,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         String config = buildTranslateConfig();
 
         if (config.equals(mTranslateConfig)) {
+            renderSubtitles();
             return;
         }
 
@@ -113,7 +119,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
 
     @Override
     public void onCues(List<Cue> cues) {
-        if (mSubtitleView != null) {
+        if (!mReleased && mSubtitleView != null) {
             updateSubtitleTrack();
             mLastCues = forceCenterAlignment(cues);
             startPrefetchIfNeeded();
@@ -127,7 +133,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
      * in the cache, which is what makes playback appear instant.
      */
     private void startPrefetchIfNeeded() {
-        if (mPrefetchStarted || !isTranslationEnabled()) {
+        if (mReleased || mPrefetchStarted || !isTranslationEnabled()) {
             return;
         }
 
@@ -161,8 +167,10 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     private void updateSubtitleTrack() {
         PlaybackView player = PlaybackPresenter.instance(mContext).getPlayer();
         FormatItem selected = player != null ? player.getSubtitleFormat() : null;
+        String videoId = PlaybackPresenter.instance(mContext).getVideo() != null
+                ? PlaybackPresenter.instance(mContext).getVideo().videoId : null;
         String key = selected == null || selected.isDefault() ? null
-                : selected.getFormatId() + "|" + selected.getLanguage();
+                : videoId + "|" + selected.getFormatId() + "|" + selected.getLanguage();
         if (!TextUtils.equals(key, mTrackKey)) {
             mTrackKey = key;
             resetTranslation();
@@ -177,7 +185,6 @@ public class SubtitleManager implements TextOutput, OnDataChange {
             mResumePlayback.run();
         }
         mTranslationGeneration++;
-        mCuesVersion++;
         mTranslationCache.clear();
         mPendingTranslations.clear();
         SubtitlePrefetcher.instance().stop();
@@ -186,7 +193,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
     }
 
     private void renderSubtitles() {
-        if (mSubtitleView == null) {
+        if (mReleased || mSubtitleView == null) {
             return;
         }
 
@@ -195,11 +202,13 @@ public class SubtitleManager implements TextOutput, OnDataChange {
             return;
         }
 
-        // Bumping the version invalidates translations that are still in flight for a previous cue.
-        long version = ++mCuesVersion;
         List<Cue> rendered = new ArrayList<>();
 
         for (Cue cue : mLastCues) {
+            if (cue.text == null) {
+                rendered.add(cue);
+                continue;
+            }
             String source = cue.text.toString();
             String translation = mTranslationCache.get(source);
 
@@ -211,7 +220,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
                     Log.i(TAG, "cache miss: [" + source + "]");
                 }
 
-                requestTranslation(source, version);
+                requestTranslation(source);
 
                 // Keep the original on screen until the translation lands, but only when the
                 // user asked for both lines: in translation only mode showing the original
@@ -225,7 +234,7 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         mSubtitleView.setCues(rendered);
     }
 
-    private void requestTranslation(String source, long version) {
+    private void requestTranslation(String source) {
         if (!isTranslatable(source) || !mPendingTranslations.add(source)) {
             return;
         }
@@ -243,10 +252,6 @@ public class SubtitleManager implements TextOutput, OnDataChange {
                     }
 
                     mTranslationCache.put(source, translation);
-
-                    if (version == mCuesVersion) {
-                        renderSubtitles();
-                    }
                 });
     }
 
@@ -274,6 +279,17 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         return false;
     }
 
+    public void release() {
+        mReleased = true;
+        mPlayerData.removeOnChange(this);
+        mTranslateData.removeOnChange(this);
+        Utils.removeCallbacks(mResumePlayback, mRenderSubtitles);
+        mResumePlayback = null;
+        mTranslationGeneration++;
+        mPendingTranslations.clear();
+        SubtitlePrefetcher.instance().stop();
+    }
+
     public void show(boolean show) {
         if (mSubtitleView != null) {
             mSubtitleView.setVisibility(show ? View.VISIBLE : View.GONE);
@@ -299,9 +315,13 @@ public class SubtitleManager implements TextOutput, OnDataChange {
         for (Cue cue : cues) {
             // Autogenerated subs repeated lines fix. Shared with the prefetcher, so both sides
             // derive the exact same cache keys.
+            if (cue.text == null) {
+                result.add(cue);
+                continue;
+            }
             String text = mDeduplicator.deduplicate(cue.text.toString());
 
-            if (text != null) {
+            if (text != null && !text.isEmpty()) {
                 result.add(new Cue(text)); // sub centered by default
             }
         }

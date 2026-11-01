@@ -143,11 +143,55 @@ public class SubtitleTranslationTest {
     }
 
     @Test
-    public void deduplicatorSkipsTrailingEmptyCues() {
+    public void deduplicatorPreservesTextWithTrailingWhitespace() {
         SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
 
-        assertNull(deduplicator.deduplicate("Hello\n"));
+        assertEquals("Hello", deduplicator.deduplicate("Hello\n"));
         assertEquals("Hello", deduplicator.deduplicate("Hello"));
+        assertNull(deduplicator.deduplicate(" \n"));
+    }
+
+    @Test
+    public void repeatedActiveCueNeverBecomesBlank() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        for (int i = 0; i < 5; i++) {
+            assertEquals("Hello", deduplicator.deduplicate("Hello"));
+        }
+        assertEquals("world", deduplicator.deduplicate("Hello\nworld"));
+        assertEquals("world", deduplicator.deduplicate("Hello\nworld"));
+    }
+
+    @Test
+    public void deduplicatorDoesNotRemoveWordsInsideTheNextSentence() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        assertEquals("Hello", deduplicator.deduplicate("Hello"));
+        assertEquals("Hello again", deduplicator.deduplicate("Hello again"));
+    }
+
+    @Test
+    public void laterBatchTranslationsNotifyTheDisplay() {
+        List<String> displayed = new ArrayList<>();
+        SubtitleTranslationCache[] holder = new SubtitleTranslationCache[1];
+        holder[0] = new SubtitleTranslationCache(() -> displayed.add(holder[0].get("second")));
+        holder[0].put("first", "第一句");
+        holder[0].put("second", "第二句");
+        assertEquals(Arrays.asList(null, "第二句"), displayed);
+        // Repeated results must not cause an endless redraw/request loop.
+        holder[0].put("second", "第二句");
+        assertEquals(2, displayed.size());
+    }
+
+    @Test
+    public void failedOrBlankTranslationsStayMissingUntilARetrySucceeds() {
+        List<String> changes = new ArrayList<>();
+        SubtitleTranslationCache cache = new SubtitleTranslationCache(() -> changes.add("redraw"));
+        cache.put("hello", null);
+        cache.put("hello", " \n");
+        assertNull(cache.get("hello"));
+        assertTrue(changes.isEmpty());
+        cache.put("hello", "你好");
+        assertEquals("你好", cache.get("hello"));
+        assertEquals(1, changes.size());
     }
 
     /** Both sides must derive the same keys from the same cue sequence. */
