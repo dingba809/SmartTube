@@ -1,8 +1,7 @@
 package com.liskovsoft.smartyoutubetv2.common.exoplayer.other;
 
-/** Removes complete repeated rolling-caption lines without erasing a repeated cue callback. */
+/** Removes complete rolling-caption overlap while keeping repeated active-cue callbacks stable. */
 public class SubtitleTextDeduplicator {
-    private String mPreviousLine;
     private String mLastInput;
     private String mLastOutput;
 
@@ -11,16 +10,33 @@ public class SubtitleTextDeduplicator {
             return null;
         }
         String input = text.trim();
-        // ExoPlayer can submit the same active cue again; it must retain its display text.
         if (input.equals(mLastInput)) {
             return mLastOutput;
         }
         String output = input;
-        if (mPreviousLine != null && input.startsWith(mPreviousLine + "\n")) {
-            output = input.substring(mPreviousLine.length() + 1);
+        if (mLastInput != null) {
+            String[] previous = mLastInput.split("\n");
+            String[] current = input.split("\n");
+            // A rolling window may repeat several complete lines, not just its last line.
+            // Leave at least one current line: a shrinking window is still the active cue.
+            for (int overlap = Math.min(previous.length, current.length - 1); overlap > 0; overlap--) {
+                boolean matches = true;
+                for (int i = 0; i < overlap; i++) {
+                    if (!previous[previous.length - overlap + i].equals(current[i])) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    int start = 0;
+                    for (int i = 0; i < overlap; i++) {
+                        start += current[i].length() + 1;
+                    }
+                    output = input.substring(start);
+                    break;
+                }
+            }
         }
-        int lastNewline = input.lastIndexOf('\n');
-        mPreviousLine = input.substring(lastNewline + 1);
         mLastInput = input;
         mLastOutput = output;
         return output;

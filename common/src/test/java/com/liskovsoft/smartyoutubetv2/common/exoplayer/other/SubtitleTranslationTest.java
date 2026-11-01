@@ -169,6 +169,47 @@ public class SubtitleTranslationTest {
     }
 
     @Test
+    public void expandingRollingWindowDisplaysOnlyTheNewLine() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        assertEquals("first", deduplicator.deduplicate("first"));
+        assertEquals("second", deduplicator.deduplicate("first\nsecond"));
+        assertEquals("third", deduplicator.deduplicate("first\nsecond\nthird"));
+        assertEquals("third", deduplicator.deduplicate("first\nsecond\nthird"));
+    }
+
+    @Test
+    public void shiftingRollingWindowRemovesEveryOverlappingLine() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        assertEquals("first\nsecond\nthird", deduplicator.deduplicate("first\nsecond\nthird"));
+        assertEquals("fourth", deduplicator.deduplicate("second\nthird\nfourth"));
+        assertEquals("fifth", deduplicator.deduplicate("third\nfourth\nfifth"));
+    }
+
+    @Test
+    public void unrelatedMultilineSubtitlesKeepTheirLineWrapping() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        assertEquals("old line", deduplicator.deduplicate("old line"));
+        assertEquals("a long sentence\nwrapped on two lines",
+                deduplicator.deduplicate("a long sentence\nwrapped on two lines"));
+        assertEquals("two lines\nare not the same whole line",
+                deduplicator.deduplicate("two lines\nare not the same whole line"));
+    }
+
+    @Test
+    public void rollingWindowReturningToASingleLineDoesNotBecomeBlank() {
+        SubtitleTextDeduplicator deduplicator = new SubtitleTextDeduplicator();
+        assertEquals("first\nsecond", deduplicator.deduplicate("first\nsecond"));
+        assertEquals("second", deduplicator.deduplicate("second"));
+        assertEquals("second", deduplicator.deduplicate("second"));
+    }
+
+    @Test
+    public void htmlEntityDecodingPreservesRollingLineBoundaries() {
+        assertEquals("first &amp; second<br>third &#39;line&#39;",
+                SubtitleVttParser.preserveLineBreaks("first &amp; second\nthird &#39;line&#39;"));
+    }
+
+    @Test
     public void laterBatchTranslationsNotifyTheDisplay() {
         List<String> displayed = new ArrayList<>();
         SubtitleTranslationCache[] holder = new SubtitleTranslationCache[1];

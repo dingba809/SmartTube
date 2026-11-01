@@ -159,8 +159,8 @@ public final class WebvttCueParser {
    */
   /* package */ static void parseCueText(String id, String markup, WebvttCue.Builder builder,
       List<WebvttCssStyle> styles) {
-    // MOD: Fix embedded styles by decoding html entities
-    markup = Html.fromHtml(markup).toString();
+    // Keep caption line boundaries: HTML otherwise collapses them and hides rolling overlap.
+    markup = Html.fromHtml(markup.replace("\n", "<br>")).toString();
 
     SpannableStringBuilder spannedText = new SpannableStringBuilder();
     ArrayDeque<StartTag> startTagStack = new ArrayDeque<>();

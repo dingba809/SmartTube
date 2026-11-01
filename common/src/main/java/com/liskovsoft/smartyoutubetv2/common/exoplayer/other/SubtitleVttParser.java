@@ -23,7 +23,7 @@ public class SubtitleVttParser {
         for (String cue : extractCues(vtt)) {
             // Same call ExoPlayer makes, so both sides see the exact same text.
             @SuppressWarnings("deprecation")
-            String text = Html.fromHtml(cue).toString();
+            String text = Html.fromHtml(preserveLineBreaks(cue)).toString();
             String deduplicated = deduplicator.deduplicate(text);
 
             if (deduplicated != null && !deduplicated.trim().isEmpty()) {
@@ -32,6 +32,10 @@ public class SubtitleVttParser {
         }
 
         return result;
+    }
+
+    static String preserveLineBreaks(String cue) {
+        return cue.replace("\n", "<br>");
     }
 
     /**
